@@ -34,22 +34,63 @@ def get_messages():
 @app.post("/api/messages")
 def create_message():
     data = request.get_json(silent=True) or {}
-    name = str(data.get("name", "")).strip()[:30]
-    message = str(data.get("message", "")).strip()[:300]
-    if not name or not message:
-        return jsonify({"error": "name and message are required"}), 400
+
+    if not isinstance(data, dict):
+        return jsonify({"error": "invalid JSON data"}), 400
+
+    name = data.get("name", "")
+    message = data.get("message", "")
+
+    if not isinstance(name, str):
+        return jsonify({"error": "name must be a string"}), 400
+
+    if not isinstance(message, str):
+        return jsonify({"error": "message must be a string"}), 400
+    
+    name = name.strip()
+    message = message.strip()
+
+    if not name :
+        return jsonify({"error": "name is required"}), 400
+
+    if not message :
+            return jsonify({"error": "message is required"}), 400
+
+
+    if len(name)>30:
+        return jsonify({"error": "name is too long"}), 400
+
+    if len(message)>300:
+        return jsonify({"error": "message is too long"}), 400
+    
     created_at = datetime.now(timezone.utc).isoformat()
+
     with connect() as con:
         cur = con.execute("INSERT INTO messages(name,message,created_at) VALUES(?,?,?)", (name,message,created_at))
         row = con.execute("SELECT * FROM messages WHERE id=?", (cur.lastrowid,)).fetchone()
+
     return jsonify(dict(row)), 201
 
 @app.put("/api/messages/<int:message_id>")
 def update_message(message_id):
-    data = request.get_json(silent=True) or {}
-    message = str(data.get("message", "")).strip()[:300]
+    data = request.get_json(silent=True)
+
+    if not isinstance(data, dict):
+        return jsonify({"error": "invalid JSON data"}), 400
+    
+    message = data.get("message", "")
+
+    if not isinstance(message, dict):
+            return jsonify({"error": "message musu be a string"}), 400
+
+    message = message.strip()
+
     if not message:
         return jsonify({"error": "message is required"}), 400
+
+    if len(message) > 300:
+        return jsonify({"error": "message is too long"}), 400
+    
     with connect() as con:
         cur = con.execute("UPDATE messages SET message=? WHERE id=?", (message,message_id))
         if cur.rowcount == 0:
