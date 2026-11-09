@@ -46,3 +46,21 @@ button {
     color: #64748b;
     font-size: .85rem
 }
+
+.message button {
+    width: auto;
+    padding: 6px 14px;
+    margin-right: 8px;
+    cursor: pointer;
+}
+
+.edit-btn,
+.cancel-btn {
+    background: #e2e8f0;
+    color: #172033;
+}
+
+.save-btn {
+    background: #2563eb;
+    color: white;
+}
