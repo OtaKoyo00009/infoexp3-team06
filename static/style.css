@@ -64,3 +64,18 @@ button {
     background: #2563eb;
     color: white;
 }
+
+.delete-btn {
+    background: white;
+    color: #dc2626;
+    border: 1px solid #fca5a5;
+}
+
+.delete-btn:hover {
+    background: #fef2f2;
+}
+
+.message button:disabled {
+    opacity: .5;
+    cursor: default;
+}
