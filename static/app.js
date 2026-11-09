@@ -9,6 +9,7 @@ async function loadMessages() {
             <p class="message-text">${escapeHtml(x.message)}</p>
             <div class="meta">#${x.id}</div>
             <button type="button" class="edit-btn">編集</button>
+            <button type="button" class="delete-btn">削除</button>
         </article>
     `).join('');
 }
@@ -92,6 +93,39 @@ document.querySelector('#messages').addEventListener('click', e => {
             saveBtn.disabled = false;
         }
     });
+});
+
+// 投稿の削除
+document.querySelector('#messages').addEventListener('click', async e => {
+    if (!e.target.matches('.delete-btn')) return;
+
+    const article = e.target.closest('.message');
+    const id = article.dataset.id;
+    const deleteBtn = e.target;
+
+    if (!confirm('この投稿を削除しますか？')) return;
+
+    deleteBtn.disabled = true;
+
+    try {
+        const r = await fetch(`/api/messages/${id}`, {
+            method: 'DELETE'
+        });
+
+        if (!r.ok) {
+            throw new Error(`HTTP ${r.status}`);
+        }
+
+        document.querySelector('#status').textContent =
+            '投稿を削除しました';
+
+        await loadMessages();
+    } catch (error) {
+        console.error(error);
+        document.querySelector('#status').textContent =
+            '削除に失敗しました';
+        deleteBtn.disabled = false;
+    }
 });
 
 // 新規投稿（既存の機能）
