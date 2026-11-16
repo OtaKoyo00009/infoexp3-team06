@@ -1,6 +1,9 @@
+
 from flask import Flask, jsonify, render_template, request
 from pathlib import Path
 import sqlite3
+import hashlib
+import secrets
 from datetime import datetime, timezone
 
 app = Flask(__name__)
@@ -22,8 +25,14 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
             message TEXT NOT NULL,
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            owner_token_hash TEXT
         )""")
+        # 以前からあるDBにも投稿者認証用の列を追加する
+        cols = [r["name"] for r in con.execute("PRAGMA table_info(messages)")]
+        if "owner_token_hash" not in cols:
+            con.execute("ALTER TABLE messages ADD COLUMN owner_token_hash TEXT")
+
         # 閲覧者のリアクション（いいね・正解した・間違えた）
         con.execute("""CREATE TABLE IF NOT EXISTS reactions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -53,6 +62,25 @@ def init_db():
 
 def now_iso():
     return datetime.now(timezone.utc).isoformat()
+
+
+def hash_token(token):
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def owner_status(con, message_id):
+    """200: 正しい投稿者、403: 権限なし、404: 投稿なし"""
+    row = con.execute(
+        "SELECT owner_token_hash FROM messages WHERE id=?", (message_id,)
+    ).fetchone()
+    if row is None:
+        return 404
+
+    token = request.headers.get("X-Post-Token", "")
+    stored_hash = row["owner_token_hash"]
+    if not token or len(token) > 128 or not stored_hash:
+        return 403
+    return 200 if secrets.compare_digest(hash_token(token), stored_hash) else 403
 
 
 def message_exists(con, message_id):
@@ -98,7 +126,10 @@ def index():
 def get_messages():
     client_id = request.args.get("client_id", "")
     with connect() as con:
-        rows = con.execute("SELECT * FROM messages ORDER BY id DESC").fetchall()
+        # 認証用ハッシュは絶対に公開しない
+        rows = con.execute(
+            "SELECT id, name, message, created_at FROM messages ORDER BY id DESC"
+        ).fetchall()
         result = []
         for r in rows:
             m = dict(r)
@@ -111,7 +142,7 @@ def get_messages():
 
 @app.post("/api/messages")
 def create_message():
-    data = request.get_json(silent=True) or {}
+    data = request.get_json(silent=True)
 
     if not isinstance(data, dict):
         return jsonify({"error": "invalid JSON data"}), 400
@@ -140,14 +171,21 @@ def create_message():
     if len(message) > 300:
         return jsonify({"error": "message is too long"}), 400
 
+    # 秘密トークンは投稿ごとに生成し、DBにはハッシュだけ保存する
+    owner_token = secrets.token_urlsafe(32)
     with connect() as con:
         cur = con.execute(
-            "INSERT INTO messages(name,message,created_at) VALUES(?,?,?)",
-            (name, message, now_iso()),
+            """INSERT INTO messages(name, message, created_at, owner_token_hash)
+               VALUES(?, ?, ?, ?)""",
+            (name, message, now_iso(), hash_token(owner_token)),
         )
-        row = con.execute("SELECT * FROM messages WHERE id=?", (cur.lastrowid,)).fetchone()
+        row = con.execute(
+            "SELECT id, name, message, created_at FROM messages WHERE id=?",
+            (cur.lastrowid,),
+        ).fetchone()
 
-    return jsonify(dict(row)), 201
+    # 生のトークンは投稿を作ったブラウザにこの1回だけ返す
+    return jsonify({**dict(row), "owner_token": owner_token}), 201
 
 
 @app.put("/api/messages/<int:message_id>")
@@ -158,12 +196,10 @@ def update_message(message_id):
         return jsonify({"error": "invalid JSON data"}), 400
 
     message = data.get("message", "")
-
     if not isinstance(message, str):
         return jsonify({"error": "message must be a string"}), 400
 
     message = message.strip()
-
     if not message:
         return jsonify({"error": "message is required"}), 400
 
@@ -171,25 +207,35 @@ def update_message(message_id):
         return jsonify({"error": "message is too long"}), 400
 
     with connect() as con:
-        cur = con.execute("UPDATE messages SET message=? WHERE id=?", (message, message_id))
-        if cur.rowcount == 0:
+        status = owner_status(con, message_id)
+        if status == 404:
             return jsonify({"error": "not found"}), 404
+        if status == 403:
+            return jsonify({"error": "forbidden"}), 403
+
+        con.execute(
+            "UPDATE messages SET message=? WHERE id=?", (message, message_id)
+        )
     return jsonify({"ok": True})
 
 
 @app.delete("/api/messages/<int:message_id>")
 def delete_message(message_id):
     with connect() as con:
-        cur = con.execute("DELETE FROM messages WHERE id=?", (message_id,))
-        if cur.rowcount == 0:
+        status = owner_status(con, message_id)
+        if status == 404:
             return jsonify({"error": "not found"}), 404
+        if status == 403:
+            return jsonify({"error": "forbidden"}), 403
+
+        con.execute("DELETE FROM messages WHERE id=?", (message_id,))
         # 投稿に紐づくリアクション・コメントも削除
         con.execute("DELETE FROM reactions WHERE message_id=?", (message_id,))
         con.execute("DELETE FROM comments WHERE message_id=?", (message_id,))
     return "", 204
 
 
-# ---- 閲覧者向けAPI ----
+# ---- 閲覧者向けAPI（既存機能を維持） ----
 
 @app.post("/api/messages/<int:message_id>/reactions")
 def add_reaction(message_id):

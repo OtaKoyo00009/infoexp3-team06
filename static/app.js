@@ -1,3 +1,4 @@
+
 // ブラウザごとのID（リアクションの重複防止用）
 function getClientId() {
     const KEY = 'miniboard-client-id';
@@ -17,6 +18,36 @@ function getClientId() {
 }
 
 const CLIENT_ID = getClientId();
+
+// 投稿の編集・削除に使う秘密トークン（投稿ごとに保存）
+function postTokenKey(id) {
+    return `miniboard-post-token-${id}`;
+}
+
+function getPostToken(id) {
+    try {
+        return localStorage.getItem(postTokenKey(id)) || '';
+    } catch {
+        return '';
+    }
+}
+
+function savePostToken(id, token) {
+    try {
+        localStorage.setItem(postTokenKey(id), token);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+function removePostToken(id) {
+    try {
+        localStorage.removeItem(postTokenKey(id));
+    } catch {
+        // 保存領域が使えない場合は何もしない
+    }
+}
 
 // ---- 難易度 ----
 
@@ -114,8 +145,10 @@ async function loadMessages() {
             <b>${escapeHtml(x.name)}</b>
             <p class="message-text">${escapeHtml(x.message)}</p>
             <div class="meta">#${x.id}</div>
-            <button type="button" class="edit-btn">編集</button>
-            <button type="button" class="delete-btn">削除</button>
+            ${getPostToken(x.id) ? `
+                <button type="button" class="edit-btn">編集</button>
+                <button type="button" class="delete-btn">削除</button>
+            ` : ''}
             ${renderViewerPart(x)}
         </article>
     `).join('');
@@ -217,7 +250,8 @@ document.querySelector('#messages').addEventListener('click', e => {
             const r = await fetch(`/api/messages/${id}`, {
                 method: 'PUT',
                 headers: {
-                    'Content-Type': 'application/json'
+                    'Content-Type': 'application/json',
+                    'X-Post-Token': getPostToken(id)
                 },
                 body: JSON.stringify({ message })
             });
@@ -253,13 +287,17 @@ document.querySelector('#messages').addEventListener('click', async e => {
 
     try {
         const r = await fetch(`/api/messages/${id}`, {
-            method: 'DELETE'
+            method: 'DELETE',
+            headers: {
+                'X-Post-Token': getPostToken(id)
+            }
         });
 
         if (!r.ok) {
             throw new Error(`HTTP ${r.status}`);
         }
 
+        removePostToken(id);
         document.querySelector('#status').textContent =
             '投稿を削除しました';
 
@@ -407,20 +445,31 @@ document.querySelector('#form').addEventListener('submit', async e => {
     const name = document.querySelector('#name').value;
     const message = document.querySelector('#message').value;
 
-    const r = await fetch('/api/messages', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ name, message })
-    });
+    try {
+        const r = await fetch('/api/messages', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ name, message })
+        });
 
-    document.querySelector('#status').textContent =
-        r.ok ? '投稿しました' : '投稿に失敗しました';
+        if (!r.ok) {
+            document.querySelector('#status').textContent = '投稿に失敗しました';
+            return;
+        }
 
-    if (r.ok) {
+        const created = await r.json();
+        const saved = savePostToken(created.id, created.owner_token);
+        document.querySelector('#status').textContent = saved
+            ? '投稿しました'
+            : '投稿しましたが、編集・削除権限を保存できませんでした';
+
         document.querySelector('#message').value = '';
         await loadMessages();
+    } catch (error) {
+        console.error(error);
+        document.querySelector('#status').textContent = '投稿に失敗しました';
     }
 });
 
