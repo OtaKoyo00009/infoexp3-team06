@@ -79,3 +79,109 @@ button {
     opacity: .5;
     cursor: default;
 }
+
+/* ---- 閲覧者パーツ ---- */
+
+/* リアクションボタン */
+.reactions {
+    margin: 10px 0;
+}
+
+.reaction-btn {
+    background: #f1f5f9;
+    color: #172033;
+    border: 1px solid #e2e8f0;
+}
+
+.reaction-btn:hover {
+    background: #e2e8f0;
+}
+
+.reaction-btn {
+    user-select: none; /* ダブルクリックで文字が選択されないように */
+}
+
+/* 自分が押したボタン（ダブルクリックで取り消し） */
+.message .reaction-btn.selected {
+    background: #dbeafe;
+    border-color: #2563eb;
+    color: #1e3a8a;
+}
+
+/* 正解／間違いのもう片方（押せない） */
+.message .reaction-btn.locked {
+    opacity: .5;
+    cursor: default;
+}
+
+.message .reaction-btn.locked:hover {
+    background: #f1f5f9;
+}
+
+.reaction-btn .count {
+    margin-left: 4px;
+    color: #64748b;
+}
+
+/* コメント欄 */
+.comments {
+    border-top: 1px solid #e2e8f0;
+    margin-top: 10px;
+    padding-top: 8px;
+}
+
+.comments-title {
+    font-weight: 700;
+    font-size: .9rem;
+}
+
+.comment-list {
+    padding-left: 18px;
+    margin: 6px 0;
+}
+
+.comment-list li {
+    margin: 4px 0;
+    overflow-wrap: anywhere;
+}
+
+/* 投稿フォーム用のカード枠を打ち消す */
+.comment-form {
+    background: none;
+    border: 0;
+    border-radius: 0;
+    padding: 0;
+    margin: 6px 0 0;
+    display: flex;
+    gap: 6px;
+    align-items: center;
+}
+
+.comment-form input {
+    margin: 0;
+}
+
+.comment-form .comment-name {
+    width: 30%;
+}
+
+.comment-form .comment-text {
+    flex: 1;
+}
+
+.comment-form button {
+    margin: 0;
+    white-space: nowrap;
+}
+
+/* スマホなど狭い画面では縦並び */
+@media (max-width: 480px) {
+    .comment-form {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .comment-form .comment-name {
+        width: 100%;
+    }
+}
