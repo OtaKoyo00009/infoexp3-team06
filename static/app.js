@@ -18,12 +18,75 @@ function getClientId() {
 
 const CLIENT_ID = getClientId();
 
+// ---- 難易度 ----
+
+// 正答率（0〜1）。まだ誰も回答していなければ null
+function correctRate(reactions) {
+    const correct = reactions?.correct ?? 0;
+    const wrong = reactions?.wrong ?? 0;
+    const n = correct + wrong;
+    return n === 0 ? null : correct / n;
+}
+
+function answerCount(reactions) {
+    return (reactions?.correct ?? 0) + (reactions?.wrong ?? 0);
+}
+
+// 難易度の表示（ラベル＋正答率）
+function renderDifficulty(reactions) {
+    const rate = correctRate(reactions);
+    if (rate === null) {
+        return '<span class="level level-none">難易度 −</span> まだ回答がありません';
+    }
+
+    const n = answerCount(reactions);
+    const correct = reactions.correct ?? 0;
+    const pct = Math.round(rate * 100);
+    const [label, cls] =
+        rate >= 0.7 ? ['かんたん', 'easy'] :
+        rate >= 0.4 ? ['ふつう', 'normal'] :
+                      ['むずかしい', 'hard'];
+
+    return `<span class="level level-${cls}">${label}</span> 正答率 ${pct}%（${n}人中${correct}人正解）`;
+}
+
+// 並べ替え
+//   new : 新しい順 / old : 古い順
+//   hard: 難しい順（正答率が低い順）/ easy: 簡単な順（正答率が高い順）
+//   ※ まだ回答がない投稿は、難易度順ではいつも最後にする
+//   ※ 正答率が同じなら回答者が多い方を先に、それも同じなら新しい方を先にする
+function sortMessages(xs, mode) {
+    const byNew = (a, b) => b.id - a.id;
+    const arr = [...xs];
+
+    if (mode === 'old') return arr.sort((a, b) => a.id - b.id);
+    if (mode !== 'hard' && mode !== 'easy') return arr.sort(byNew);
+
+    return arr.sort((a, b) => {
+        const ra = correctRate(a.reactions);
+        const rb = correctRate(b.reactions);
+
+        if (ra === null && rb === null) return byNew(a, b);
+        if (ra === null) return 1;
+        if (rb === null) return -1;
+
+        if (ra !== rb) return mode === 'hard' ? ra - rb : rb - ra;
+
+        const diff = answerCount(b.reactions) - answerCount(a.reactions);
+        return diff !== 0 ? diff : byNew(a, b);
+    });
+}
+
 // 押した状態に合わせてボタンを無効化・強調する
 function applyReactionState(article, counts, mine) {
     for (const [kind, n] of Object.entries(counts)) {
         const span = article.querySelector(`.reaction-btn[data-kind="${kind}"] .count`);
         if (span) span.textContent = n;
     }
+
+    // 難易度の表示も更新（並び順はその場では変えない）
+    const difficulty = article.querySelector('.difficulty');
+    if (difficulty) difficulty.innerHTML = renderDifficulty(counts);
 
     const answered = mine.includes('correct') || mine.includes('wrong');
 
@@ -41,7 +104,10 @@ function applyReactionState(article, counts, mine) {
 
 async function loadMessages() {
     const r = await fetch(`/api/messages?client_id=${encodeURIComponent(CLIENT_ID)}`);
-    const xs = await r.json();
+    const data = await r.json();
+
+    const sortSelect = document.querySelector('#sort');
+    const xs = sortMessages(data, sortSelect ? sortSelect.value : 'new');
 
     document.querySelector('#messages').innerHTML = xs.map(x => `
         <article class="message" data-id="${x.id}">
@@ -78,6 +144,7 @@ function renderViewerPart(x) {
     };
 
     return `
+        <div class="difficulty">${renderDifficulty(r)}</div>
         <div class="reactions">
             <button type="button" ${attrs('like')}>👍 いいね <span class="count">${r.like}</span></button>
             <button type="button" ${attrs('correct')}>⭕ 正解した <span class="count">${r.correct}</span></button>
@@ -326,6 +393,11 @@ document.querySelector('#messages').addEventListener('submit', async e => {
             'コメントに失敗しました';
         submitBtn.disabled = false;
     }
+});
+
+// 並べ替えの切り替え
+document.querySelector('#sort')?.addEventListener('change', () => {
+    loadMessages();
 });
 
 // 新規投稿（既存の機能）

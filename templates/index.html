@@ -15,6 +15,15 @@
         <form id="form"><input id="name" maxlength="30" placeholder="Nickname" required><textarea id="message"
                 maxlength="300" placeholder="Message" required></textarea><button>投稿</button></form>
         <p id="status"></p>
+        <div class="toolbar">
+            <label for="sort">並べ替え</label>
+            <select id="sort">
+                <option value="new">新しい順</option>
+                <option value="old">古い順</option>
+                <option value="hard">難しい順</option>
+                <option value="easy">簡単な順</option>
+            </select>
+        </div>
         <section id="messages"></section>
     </main>
     <script src="/static/app.js"></script>
