@@ -1,25 +1,38 @@
 
+
+// ========================================
 // ブラウザごとのID（リアクションの重複防止用）
+// ========================================
+
 function getClientId() {
     const KEY = 'miniboard-client-id';
+
     try {
         let id = localStorage.getItem(KEY);
+
         if (!id) {
             id = (crypto.randomUUID && crypto.randomUUID())
                 || (Date.now().toString(36) + Math.random().toString(36).slice(2));
+
             localStorage.setItem(KEY, id);
         }
+
         return id;
     } catch {
-        // localStorage が使えない環境ではページを開いている間だけのIDにする
-        window._miniboardClientId ??= Date.now().toString(36) + Math.random().toString(36).slice(2);
+        window._miniboardClientId ??=
+            Date.now().toString(36) + Math.random().toString(36).slice(2);
+
         return window._miniboardClientId;
     }
 }
 
 const CLIENT_ID = getClientId();
 
-// 投稿の編集・削除に使う秘密トークン（投稿ごとに保存）
+
+// ========================================
+// 投稿者本人の編集・削除用トークン
+// ========================================
+
 function postTokenKey(id) {
     return `miniboard-post-token-${id}`;
 }
@@ -45,215 +58,346 @@ function removePostToken(id) {
     try {
         localStorage.removeItem(postTokenKey(id));
     } catch {
-        // 保存領域が使えない場合は何もしない
+        // 保存できない場合は何もしない
     }
 }
 
-// ---- 難易度 ----
 
-// 正答率（0〜1）。まだ誰も回答していなければ null
+// ========================================
+// 共通処理
+// ========================================
+
+function escapeHtml(value) {
+    const d = document.createElement('div');
+    d.textContent = String(value ?? '');
+    return d.innerHTML;
+}
+
+
+// ========================================
+// 難易度の計算
+// ========================================
+
+// 正答率（0〜1）
 function correctRate(reactions) {
     const correct = reactions?.correct ?? 0;
     const wrong = reactions?.wrong ?? 0;
-    const n = correct + wrong;
-    return n === 0 ? null : correct / n;
+    const total = correct + wrong;
+
+    return total === 0 ? null : correct / total;
 }
 
+// 回答者数
 function answerCount(reactions) {
     return (reactions?.correct ?? 0) + (reactions?.wrong ?? 0);
 }
 
-// 難易度の表示（ラベル＋正答率）
+// 難易度の表示
 function renderDifficulty(reactions) {
     const rate = correctRate(reactions);
+
     if (rate === null) {
         return '<span class="level level-none">難易度 −</span> まだ回答がありません';
     }
 
-    const n = answerCount(reactions);
+    const total = answerCount(reactions);
     const correct = reactions.correct ?? 0;
     const pct = Math.round(rate * 100);
+
     const [label, cls] =
         rate >= 0.7 ? ['かんたん', 'easy'] :
         rate >= 0.4 ? ['ふつう', 'normal'] :
-                      ['むずかしい', 'hard'];
+        ['むずかしい', 'hard'];
 
-    return `<span class="level level-${cls}">${label}</span> 正答率 ${pct}%（${n}人中${correct}人正解）`;
+    return `
+        <span class="level level-${cls}">${label}</span>
+        正答率 ${pct}%（${total}人中${correct}人正解）
+    `;
 }
 
-// 並べ替え
-//   new : 新しい順 / old : 古い順
-//   hard: 難しい順（正答率が低い順）/ easy: 簡単な順（正答率が高い順）
-//   ※ まだ回答がない投稿は、難易度順ではいつも最後にする
-//   ※ 正答率が同じなら回答者が多い方を先に、それも同じなら新しい方を先にする
-function sortMessages(xs, mode) {
-    const byNew = (a, b) => b.id - a.id;
-    const arr = [...xs];
 
-    if (mode === 'old') return arr.sort((a, b) => a.id - b.id);
-    if (mode !== 'hard' && mode !== 'easy') return arr.sort(byNew);
+// ========================================
+// クイズの並べ替え
+// ========================================
+
+// new  : 新しい順
+// old  : 古い順
+// hard : 難しい順
+// easy : 簡単な順
+
+function sortQuizzes(quizzes, mode) {
+    const arr = [...quizzes];
+
+    const byNew = (a, b) => b.id - a.id;
+
+    if (mode === 'old') {
+        return arr.sort((a, b) => a.id - b.id);
+    }
+
+    if (mode !== 'hard' && mode !== 'easy') {
+        return arr.sort(byNew);
+    }
 
     return arr.sort((a, b) => {
         const ra = correctRate(a.reactions);
         const rb = correctRate(b.reactions);
 
+        // 回答がないクイズは最後にする
         if (ra === null && rb === null) return byNew(a, b);
         if (ra === null) return 1;
         if (rb === null) return -1;
 
-        if (ra !== rb) return mode === 'hard' ? ra - rb : rb - ra;
+        // 正答率で比較
+        if (ra !== rb) {
+            return mode === 'hard' ? ra - rb : rb - ra;
+        }
 
+        // 正答率が同じなら回答者数が多い方を先にする
         const diff = answerCount(b.reactions) - answerCount(a.reactions);
+
         return diff !== 0 ? diff : byNew(a, b);
     });
 }
 
-// 押した状態に合わせてボタンを無効化・強調する
-function applyReactionState(article, counts, mine) {
-    for (const [kind, n] of Object.entries(counts)) {
-        const span = article.querySelector(`.reaction-btn[data-kind="${kind}"] .count`);
-        if (span) span.textContent = n;
+
+// ========================================
+// クイズ一覧の取得・表示
+// ========================================
+
+async function loadQuizzes() {
+    try {
+        const r = await fetch(
+            `/api/quizzes?client_id=${encodeURIComponent(CLIENT_ID)}`
+        );
+
+        if (!r.ok) {
+            throw new Error(`HTTP ${r.status}`);
+        }
+
+        const quizzes = await r.json();
+
+        const sortSelect = document.querySelector('#sort');
+        const mode = sortSelect ? sortSelect.value : 'new';
+
+        const sorted = sortQuizzes(quizzes, mode);
+
+        document.querySelector('#quizzes').innerHTML =
+            sorted.map(q => `
+                <article class="quiz" data-id="${q.id}">
+
+                    <b>${escapeHtml(q.name)}</b>
+
+                    <p class="question">
+                        ${escapeHtml(q.question)}
+                    </p>
+
+                    <p class="answer" hidden>
+                        解答：${escapeHtml(q.answer)}
+                    </p>
+
+                    <button type="button" class="answer-btn">
+                        解答を見る
+                    </button>
+
+                    <div class="meta">#${q.id}</div>
+
+                    ${getPostToken(q.id) ? `
+                        <button type="button" class="edit-btn">編集</button>
+                        <button type="button" class="delete-btn">削除</button>
+                    ` : ''}
+
+                    ${renderViewerPart(q)}
+
+                </article>
+            `).join('');
+
+    } catch (error) {
+        console.error(error);
+
+        document.querySelector('#status').textContent =
+            'クイズの読み込みに失敗しました';
     }
-
-    // 難易度の表示も更新（並び順はその場では変えない）
-    const difficulty = article.querySelector('.difficulty');
-    if (difficulty) difficulty.innerHTML = renderDifficulty(counts);
-
-    const answered = mine.includes('correct') || mine.includes('wrong');
-
-    // ※ disabled にするとダブルクリックを受け取れないので、クラスで状態を表す
-    //   selected: 自分が押したボタン（ダブルクリックで取り消せる）
-    //   locked  : 正解／間違いのもう片方（押せない）
-    article.querySelectorAll('.reaction-btn').forEach(btn => {
-        const kind = btn.dataset.kind;
-        const pressed = mine.includes(kind);
-        btn.classList.toggle('selected', pressed);
-        btn.classList.toggle('locked', kind !== 'like' && answered && !pressed);
-        btn.title = pressed ? 'ダブルクリックで取り消し' : '';
-    });
 }
 
-async function loadMessages() {
-    const r = await fetch(`/api/messages?client_id=${encodeURIComponent(CLIENT_ID)}`);
-    const data = await r.json();
 
-    const sortSelect = document.querySelector('#sort');
-    const xs = sortMessages(data, sortSelect ? sortSelect.value : 'new');
+// ========================================
+// リアクション・コメント欄の表示
+// ========================================
 
-    document.querySelector('#messages').innerHTML = xs.map(x => `
-        <article class="message" data-id="${x.id}">
-            <b>${escapeHtml(x.name)}</b>
-            <p class="message-text">${escapeHtml(x.message)}</p>
-            <div class="meta">#${x.id}</div>
-            ${getPostToken(x.id) ? `
-                <button type="button" class="edit-btn">編集</button>
-                <button type="button" class="delete-btn">削除</button>
-            ` : ''}
-            ${renderViewerPart(x)}
-        </article>
-    `).join('');
-}
+function renderViewerPart(q) {
+    const reactions = q.reactions ?? {
+        like: 0,
+        correct: 0,
+        wrong: 0
+    };
 
-function escapeHtml(s) {
-    const d = document.createElement('div');
-    d.textContent = s;
-    return d.innerHTML;
-}
+    const mine = q.my_reactions ?? [];
+    const comments = q.comments ?? [];
 
-// 閲覧者パーツ（リアクションボタン・コメント欄）
-function renderViewerPart(x) {
-    const r = x.reactions ?? { like: 0, correct: 0, wrong: 0 };
-    const mine = x.my_reactions ?? [];
-    const comments = x.comments ?? [];
-    const answered = mine.includes('correct') || mine.includes('wrong');
+    const answered =
+        mine.includes('correct') || mine.includes('wrong');
 
-    // 押せるかどうか・押したかどうかの属性を作る
     const attrs = kind => {
         const pressed = mine.includes(kind);
         const locked = kind !== 'like' && answered && !pressed;
-        const cls = 'reaction-btn' + (pressed ? ' selected' : '') + (locked ? ' locked' : '');
-        const title = pressed ? ' title="ダブルクリックで取り消し"' : '';
+
+        const cls =
+            'reaction-btn'
+            + (pressed ? ' selected' : '')
+            + (locked ? ' locked' : '');
+
+        const title = pressed
+            ? ' title="ダブルクリックで取り消し"'
+            : '';
+
         return `class="${cls}" data-kind="${kind}"${title}`;
     };
 
     return `
-        <div class="difficulty">${renderDifficulty(r)}</div>
-        <div class="reactions">
-            <button type="button" ${attrs('like')}>👍 いいね <span class="count">${r.like}</span></button>
-            <button type="button" ${attrs('correct')}>⭕ 正解した <span class="count">${r.correct}</span></button>
-            <button type="button" ${attrs('wrong')}>❌ 間違えた <span class="count">${r.wrong}</span></button>
+        <div class="difficulty">
+            ${renderDifficulty(reactions)}
         </div>
+
+        <div class="reactions">
+            <button type="button" ${attrs('like')}>
+                👍 いいね
+                <span class="count">${reactions.like}</span>
+            </button>
+
+            <button type="button" ${attrs('correct')}>
+                ⭕ 正解した
+                <span class="count">${reactions.correct}</span>
+            </button>
+
+            <button type="button" ${attrs('wrong')}>
+                ❌ 間違えた
+                <span class="count">${reactions.wrong}</span>
+            </button>
+        </div>
+
         <section class="comments">
-            <div class="comments-title">コメント (${comments.length})</div>
+            <div class="comments-title">
+                コメント (${comments.length})
+            </div>
+
             <ul class="comment-list">
-                ${comments.map(c => `<li><b>${escapeHtml(c.name)}</b>：${escapeHtml(c.comment)}</li>`).join('')}
+                ${comments.map(c => `
+                    <li>
+                        <b>${escapeHtml(c.name)}</b>：
+                        ${escapeHtml(c.comment)}
+                    </li>
+                `).join('')}
             </ul>
+
             <form class="comment-form">
-                <input class="comment-name" maxlength="30" placeholder="Nickname" required>
-                <input class="comment-text" maxlength="200" placeholder="コメントを書く" required>
-                <button>コメントする</button>
+                <input
+                    class="comment-name"
+                    maxlength="30"
+                    placeholder="Nickname"
+                    required
+                >
+
+                <input
+                    class="comment-text"
+                    maxlength="200"
+                    placeholder="コメントを書く"
+                    required
+                >
+
+                <button type="submit">コメントする</button>
             </form>
         </section>
     `;
 }
 
-// 投稿の編集
-document.querySelector('#messages').addEventListener('click', e => {
+
+// ========================================
+// 解答の表示・非表示
+// ========================================
+
+document.querySelector('#quizzes').addEventListener('click', e => {
+    if (!e.target.matches('.answer-btn')) return;
+
+    const article = e.target.closest('.quiz');
+    const answer = article.querySelector('.answer');
+
+    answer.hidden = !answer.hidden;
+
+    e.target.textContent =
+        answer.hidden ? '解答を見る' : '解答を隠す';
+});
+
+
+// ========================================
+// クイズの編集
+// ========================================
+
+document.querySelector('#quizzes').addEventListener('click', e => {
     if (!e.target.matches('.edit-btn')) return;
 
-    const article = e.target.closest('.message');
+    const article = e.target.closest('.quiz');
     const id = article.dataset.id;
-    const text = article.querySelector('.message-text');
+
+    const question = article.querySelector('.question');
+    const answer = article.querySelector('.answer');
     const editBtn = e.target;
 
-    // 元のメッセージを編集欄に表示
-    const editor = document.createElement('textarea');
-    editor.value = text.textContent;
-    editor.maxLength = 300;
+    const questionEditor = document.createElement('textarea');
+    questionEditor.value = question.textContent.trim();
+    questionEditor.maxLength = 300;
 
-    // 保存・キャンセルボタン
+    const answerEditor = document.createElement('textarea');
+    answerEditor.value = answer.textContent
+        .replace(/^解答：/, '')
+        .trim();
+    answerEditor.maxLength = 300;
+
     const saveBtn = document.createElement('button');
     saveBtn.textContent = '保存';
     saveBtn.type = 'button';
-    saveBtn.className = 'save-btn';
 
     const cancelBtn = document.createElement('button');
     cancelBtn.textContent = 'キャンセル';
     cancelBtn.type = 'button';
-    cancelBtn.className = 'cancel-btn';
 
-    // 表示を編集モードへ切り替える
-    text.replaceWith(editor);
+    question.replaceWith(questionEditor);
+    answer.replaceWith(answerEditor);
     editBtn.replaceWith(saveBtn);
     saveBtn.after(cancelBtn);
-    editor.focus();
+
+    questionEditor.focus();
 
     // キャンセル
     cancelBtn.addEventListener('click', () => {
-        editor.replaceWith(text);
+        questionEditor.replaceWith(question);
+        answerEditor.replaceWith(answer);
         saveBtn.replaceWith(editBtn);
         cancelBtn.remove();
     });
 
     // 保存
     saveBtn.addEventListener('click', async () => {
-        const message = editor.value.trim();
+        const newQuestion = questionEditor.value.trim();
+        const newAnswer = answerEditor.value.trim();
 
-        if (!message) {
-            alert('メッセージを入力してください');
+        if (!newQuestion || !newAnswer) {
+            alert('問題文と解答を入力してください');
             return;
         }
 
         saveBtn.disabled = true;
 
         try {
-            const r = await fetch(`/api/messages/${id}`, {
+            const r = await fetch(`/api/quizzes/${id}`, {
                 method: 'PUT',
                 headers: {
                     'Content-Type': 'application/json',
                     'X-Post-Token': getPostToken(id)
                 },
-                body: JSON.stringify({ message })
+                body: JSON.stringify({
+                    question: newQuestion,
+                    answer: newAnswer
+                })
             });
 
             if (!r.ok) {
@@ -261,32 +405,39 @@ document.querySelector('#messages').addEventListener('click', e => {
             }
 
             document.querySelector('#status').textContent =
-                '投稿を編集しました';
+                'クイズを編集しました';
 
-            await loadMessages();
+            await loadQuizzes();
+
         } catch (error) {
             console.error(error);
+
             document.querySelector('#status').textContent =
                 '編集に失敗しました';
+
             saveBtn.disabled = false;
         }
     });
 });
 
-// 投稿の削除
-document.querySelector('#messages').addEventListener('click', async e => {
+
+// ========================================
+// クイズの削除
+// ========================================
+
+document.querySelector('#quizzes').addEventListener('click', async e => {
     if (!e.target.matches('.delete-btn')) return;
 
-    const article = e.target.closest('.message');
+    const article = e.target.closest('.quiz');
     const id = article.dataset.id;
     const deleteBtn = e.target;
 
-    if (!confirm('この投稿を削除しますか？')) return;
+    if (!confirm('このクイズを削除しますか？')) return;
 
     deleteBtn.disabled = true;
 
     try {
-        const r = await fetch(`/api/messages/${id}`, {
+        const r = await fetch(`/api/quizzes/${id}`, {
             method: 'DELETE',
             headers: {
                 'X-Post-Token': getPostToken(id)
@@ -298,123 +449,217 @@ document.querySelector('#messages').addEventListener('click', async e => {
         }
 
         removePostToken(id);
-        document.querySelector('#status').textContent =
-            '投稿を削除しました';
 
-        await loadMessages();
+        document.querySelector('#status').textContent =
+            'クイズを削除しました';
+
+        await loadQuizzes();
+
     } catch (error) {
         console.error(error);
+
         document.querySelector('#status').textContent =
             '削除に失敗しました';
+
         deleteBtn.disabled = false;
     }
 });
 
-// リアクションをサーバーへ送る（method: 'POST' で押す / 'DELETE' で取り消す）
+
+// ========================================
+// リアクション状態の更新
+// ========================================
+
+function applyReactionState(article, counts, mine) {
+    for (const [kind, n] of Object.entries(counts)) {
+        const span = article.querySelector(
+            `.reaction-btn[data-kind="${kind}"] .count`
+        );
+
+        if (span) span.textContent = n;
+    }
+
+    // 難易度の表示を更新
+    const difficulty = article.querySelector('.difficulty');
+
+    if (difficulty) {
+        difficulty.innerHTML = renderDifficulty(counts);
+    }
+
+    const answered =
+        mine.includes('correct') || mine.includes('wrong');
+
+    article.querySelectorAll('.reaction-btn').forEach(btn => {
+        const kind = btn.dataset.kind;
+        const pressed = mine.includes(kind);
+
+        btn.classList.toggle('selected', pressed);
+
+        btn.classList.toggle(
+            'locked',
+            kind !== 'like' && answered && !pressed
+        );
+
+        btn.title = pressed ? 'ダブルクリックで取り消し' : '';
+    });
+}
+
+
+// ========================================
+// リアクションの送信・取り消し
+// ========================================
+
 async function sendReaction(btn, method) {
-    const article = btn.closest('.message');
+    const article = btn.closest('.quiz');
     const id = article.dataset.id;
     const kind = btn.dataset.kind;
 
-    // 送信中の連打を防ぐ（正解・間違いは両方とも止める）
     const lockTargets = kind === 'like'
         ? [btn]
-        : [...article.querySelectorAll('.reaction-btn[data-kind="correct"], .reaction-btn[data-kind="wrong"]')];
-    lockTargets.forEach(b => { b.disabled = true; });
+        : [
+            ...article.querySelectorAll(
+                '.reaction-btn[data-kind="correct"], .reaction-btn[data-kind="wrong"]'
+            )
+        ];
+
+    lockTargets.forEach(b => {
+        b.disabled = true;
+    });
 
     try {
-        const r = await fetch(`/api/messages/${id}/reactions`, {
+        const r = await fetch(`/api/quizzes/${id}/reactions`, {
             method,
             headers: {
                 'Content-Type': 'application/json'
             },
-            body: JSON.stringify({ kind, client_id: CLIENT_ID })
+            body: JSON.stringify({
+                kind,
+                client_id: CLIENT_ID
+            })
         });
 
-        // POST   201: 押せた     / 409: すでに押していた
-        // DELETE 200: 取り消せた / 404: 押していなかった
-        // いずれもサーバーの最新状態が返ってくるので、それを画面に反映する
-        const okStatuses = method === 'POST' ? [201, 409] : [200, 404];
+        const okStatuses = method === 'POST'
+            ? [201, 409]
+            : [200, 404];
+
         if (!okStatuses.includes(r.status)) {
             throw new Error(`HTTP ${r.status}`);
         }
 
         const data = await r.json();
+
         if (!data.reactions) {
-            // 投稿自体が見つからない（削除済みなど）
-            await loadMessages();
+            await loadQuizzes();
             return;
         }
-        applyReactionState(article, data.reactions, data.my_reactions);
+
+        applyReactionState(
+            article,
+            data.reactions,
+            data.my_reactions
+        );
 
         if (method === 'POST' && r.status === 409) {
             document.querySelector('#status').textContent =
-                'この投稿にはすでにリアクションしています';
+                'このクイズにはすでにリアクションしています';
         }
+
         if (method === 'DELETE' && r.status === 200) {
             document.querySelector('#status').textContent =
                 'リアクションを取り消しました';
         }
+
     } catch (error) {
         console.error(error);
+
         document.querySelector('#status').textContent =
-            method === 'POST' ? 'リアクションに失敗しました' : '取り消しに失敗しました';
+            method === 'POST'
+                ? 'リアクションに失敗しました'
+                : '取り消しに失敗しました';
+
     } finally {
-        lockTargets.forEach(b => { b.disabled = false; });
+        lockTargets.forEach(b => {
+            b.disabled = false;
+        });
     }
 }
 
+
 // クリック：まだ押していないボタンを押す
-document.querySelector('#messages').addEventListener('click', e => {
-    // ボタン内の <span> をクリックしても拾えるよう closest を使う
+
+document.querySelector('#quizzes').addEventListener('click', e => {
     const btn = e.target.closest('.reaction-btn');
+
     if (!btn || btn.disabled) return;
 
-    // ダブルクリックの1回目の時点で「押した状態」だったかを記録しておく
-    // （未押下のボタンをダブルクリックしたとき、押す→即取り消し にならないように）
     if (e.detail <= 1) {
-        btn.dataset.armed = btn.classList.contains('selected') ? '1' : '';
+        btn.dataset.armed =
+            btn.classList.contains('selected') ? '1' : '';
     }
 
-    // ダブルクリックの2回目のクリックは無視
     if (e.detail > 1) return;
 
-    if (btn.classList.contains('selected') || btn.classList.contains('locked')) return;
+    if (
+        btn.classList.contains('selected') ||
+        btn.classList.contains('locked')
+    ) {
+        return;
+    }
 
     sendReaction(btn, 'POST');
 });
 
-// ダブルクリック：押したボタンを取り消す
-document.querySelector('#messages').addEventListener('dblclick', e => {
+
+// ダブルクリック：押したリアクションを取り消す
+
+document.querySelector('#quizzes').addEventListener('dblclick', e => {
     const btn = e.target.closest('.reaction-btn');
+
     if (!btn || btn.disabled) return;
 
-    if (btn.dataset.armed !== '1' || !btn.classList.contains('selected')) return;
+    if (
+        btn.dataset.armed !== '1' ||
+        !btn.classList.contains('selected')
+    ) {
+        return;
+    }
+
     btn.dataset.armed = '';
 
     sendReaction(btn, 'DELETE');
 });
 
+
+// ========================================
 // コメント投稿
-document.querySelector('#messages').addEventListener('submit', async e => {
+// ========================================
+
+document.querySelector('#quizzes').addEventListener('submit', async e => {
     if (!e.target.matches('.comment-form')) return;
+
     e.preventDefault();
 
     const form = e.target;
-    const id = form.closest('.message').dataset.id;
-    const name = form.querySelector('.comment-name').value;
-    const comment = form.querySelector('.comment-text').value;
+    const id = form.closest('.quiz').dataset.id;
+
+    const name = form.querySelector('.comment-name').value.trim();
+    const comment = form.querySelector('.comment-text').value.trim();
     const submitBtn = form.querySelector('button');
+
+    if (!name || !comment) return;
 
     submitBtn.disabled = true;
 
     try {
-        const r = await fetch(`/api/messages/${id}/comments`, {
+        const r = await fetch(`/api/quizzes/${id}/comments`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
             },
-            body: JSON.stringify({ name, comment })
+            body: JSON.stringify({
+                name,
+                comment
+            })
         });
 
         if (!r.ok) {
@@ -424,53 +669,96 @@ document.querySelector('#messages').addEventListener('submit', async e => {
         document.querySelector('#status').textContent =
             'コメントしました';
 
-        await loadMessages();
+        await loadQuizzes();
+
     } catch (error) {
         console.error(error);
+
         document.querySelector('#status').textContent =
             'コメントに失敗しました';
+
         submitBtn.disabled = false;
     }
 });
 
-// 並べ替えの切り替え
-document.querySelector('#sort')?.addEventListener('change', () => {
-    loadMessages();
+
+// ========================================
+// 並べ替え
+// ========================================
+
+document.querySelector('#sort').addEventListener('change', () => {
+    loadQuizzes();
 });
 
-// 新規投稿（既存の機能）
+
+// ========================================
+// 新しいクイズの投稿
+// ========================================
+
 document.querySelector('#form').addEventListener('submit', async e => {
     e.preventDefault();
 
-    const name = document.querySelector('#name').value;
-    const message = document.querySelector('#message').value;
+    const name = document.querySelector('#name').value.trim();
+    const question = document.querySelector('#question').value.trim();
+    const answer = document.querySelector('#answer').value.trim();
+
+    const status = document.querySelector('#status');
+
+    if (!name || !question || !answer) {
+        status.textContent =
+            '名前・問題文・解答をすべて入力してください';
+        return;
+    }
+
+    const submitBtn = e.target.querySelector('button[type="submit"]');
+    submitBtn.disabled = true;
 
     try {
-        const r = await fetch('/api/messages', {
+        const r = await fetch('/api/quizzes', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
             },
-            body: JSON.stringify({ name, message })
+            body: JSON.stringify({
+                name,
+                question,
+                answer
+            })
         });
 
         if (!r.ok) {
-            document.querySelector('#status').textContent = '投稿に失敗しました';
-            return;
+            throw new Error(`HTTP ${r.status}`);
         }
 
         const created = await r.json();
-        const saved = savePostToken(created.id, created.owner_token);
-        document.querySelector('#status').textContent = saved
-            ? '投稿しました'
-            : '投稿しましたが、編集・削除権限を保存できませんでした';
 
-        document.querySelector('#message').value = '';
-        await loadMessages();
+        // 投稿者用トークンを保存
+        const saved = created.owner_token
+            ? savePostToken(created.id, created.owner_token)
+            : false;
+
+        status.textContent = saved
+            ? 'クイズを投稿しました'
+            : 'クイズを投稿しました（編集・削除用トークンを取得できませんでした）';
+
+        document.querySelector('#form').reset();
+
+        await loadQuizzes();
+
     } catch (error) {
         console.error(error);
-        document.querySelector('#status').textContent = '投稿に失敗しました';
+
+        status.textContent = 'クイズの投稿に失敗しました';
+
+    } finally {
+        submitBtn.disabled = false;
     }
 });
 
-loadMessages();
+
+// ========================================
+// 初期表示
+// ========================================
+
+loadQuizzes();
+
